@@ -411,10 +411,9 @@ class ParallelConfig:
         self.disable_custom_all_reduce = disable_custom_all_reduce
         self.ray_workers_use_nsight = ray_workers_use_nsight
 
-        self.world_size = pipeline_parallel_size * self.tensor_parallel_size
-        # Ray worker is not supported for Neuron backend.
-        if self.world_size > 1 and not is_neuron():
-            self.worker_use_ray = True
+        self.world_size = pipeline_parallel_size * tensor_parallel_size
+        if self.world_size > 1:
+            self.worker_use_ray = False
         self._verify_args()
 
     def _verify_args(self) -> None:

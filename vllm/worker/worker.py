@@ -52,6 +52,9 @@ class Worker:
         self.distributed_init_method = distributed_init_method
         self.lora_config = lora_config
         self.is_driver_worker = is_driver_worker
+        local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        self.local_rank = local_rank
+
         if self.is_driver_worker:
             assert self.rank == 0, "The driver worker must have rank 0."
 
@@ -81,6 +84,8 @@ class Worker:
 
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
+            self.rank = self.rank if self.rank is not None else int(
+            os.getenv("RANK", "-1"))
             self.device = torch.device(f"cuda:{self.local_rank}")
             torch.cuda.set_device(self.device)
 
@@ -194,7 +199,7 @@ class Worker:
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
     ) -> Optional[SamplerOutput]:
-        if self.is_driver_worker:
+        if self.is_driver_worker and self.rank == 0:
             assert seq_group_metadata_list is not None
             num_seq_groups = len(seq_group_metadata_list)
             assert blocks_to_swap_in is not None
@@ -206,7 +211,7 @@ class Worker:
                 "blocks_to_swap_out": blocks_to_swap_out,
                 "blocks_to_copy": blocks_to_copy,
             }
-            broadcast_tensor_dict(data, src=0)
+            #broadcast_tensor_dict(data, src=0)
         else:
             data = broadcast_tensor_dict(src=0)
             num_seq_groups = data["num_seq_groups"]
@@ -256,8 +261,9 @@ def init_distributed_environment(
         torch.distributed.init_process_group(
             backend="nccl",
             world_size=parallel_config.world_size,
-            rank=rank,
-            init_method=distributed_init_method,
+            #rank=rank,
+            #init_method=distributed_init_method,
+            init_method="env://",
         )
 
     if cupy_utils.is_initialized():

@@ -25,6 +25,7 @@ ARG BUILD_FA="1"
 
 # Install some basic utilities
 RUN apt-get update && apt-get install python3 python3-pip -y
+# RUN apt update && apt install -y sqlite3 libsqlite3-dev libfmt-dev
 
 # Install some basic utilities
 RUN apt-get update && apt-get install -y \
@@ -39,6 +40,9 @@ RUN apt-get update && apt-get install -y \
     unzip \
     nvidia-cuda-toolkit \
     tmux \
+    sqlite3 \
+    libsqlite3-dev \
+    libfmt-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ### Mount Point ###
@@ -46,6 +50,10 @@ RUN apt-get update && apt-get install -y \
 ARG APP_MOUNT=/app
 VOLUME [ ${APP_MOUNT} ]
 WORKDIR ${APP_MOUNT}
+
+RUN python3 -m ensurepip --default-pip
+RUN wget https://bootstrap.pypa.io/get-pip.py
+RUN python3 get-pip.py
 
 RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install --no-cache-dir fastapi ninja tokenizers pandas
@@ -70,6 +78,24 @@ RUN if [ "$BUILD_FA" = "1" ]; then \
     && cd ..; \
     fi
 
+RUN git clone -b develop https://github.com/ROCmSoftwarePlatform/hipBLASLt \
+    && export GTest_DIR="/usr/local/lib/cmake/GTest/" \
+    && cd hipBLASLt \
+    && ./install.sh -idc --architecture 'gfx90a;gfx942' \
+    && cd ../ && rm -rf hipBLASLt
+RUN sed -i 's/, hipblaslt-dev \(.*\), hipcub-dev/, hipcub-dev/g' /var/lib/dpkg/status
+RUN sed -i 's/, hipblaslt \(.*\), hipfft/, hipfft/g' /var/lib/dpkg/status
+
+RUN pip uninstall -y triton
+RUN git clone https://github.com/ROCmSoftwarePlatform/triton.git \
+    && cd triton/python && pip3 install -e . \
+    && cd ..;
+ENV MAX_JOBS=32
+RUN git clone -b exp_bandaid https://github.com/ROCmSoftwarePlatform/rccl \
+    && cd rccl && mkdir build && cd build \
+    && CXX=/opt/rocm/bin/hipcc cmake -DCMAKE_PREFIX_PATH=/opt/rocm/ .. && make -j \
+    && cd ..;
+
 COPY ./ /app/vllm
 
 RUN python3 -m pip install --upgrade pip
@@ -85,9 +111,18 @@ RUN cd /app \
     && pip install -U -r requirements-rocm.txt \
     && if [ "$BUILD_FA" = "1" ]; then \
        bash patch_xformers.rocm.sh; fi \
-    && patch /opt/rocm/include/hip/amd_detail/amd_hip_bf16.h /app/vllm/rocm_patch/rocm_bf16.patch \
-    && python3 setup.py install \
-    && cd ..
+    && patch /opt/rocm/include/hip/amd_detail/amd_hip_bf16.h /app/vllm/rocm_patch/rocm_bf16.patch \   
+    && pip install typing-extensions==4.8.0 \
+    && cd gradlib && python3 setup.py develop && cd ../ \
+    && python3 setup.py build && python3 setup.py develop \
+    && cd ..;
+
+
+RUN pip install pyarrow Ray pandas==2.0 numpy==1.20.3
+
+RUN git clone https://github.com/ROCmSoftwarePlatform/rocmProfileData.git \
+    && cd rocmProfileData && make; make install \
+    && cd ..;
 
 RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install --no-cache-dir ray[all]

@@ -610,7 +610,7 @@ template<
   typename CACHE_T,
   int BLOCK_SIZE,
   bool IS_FP8_E5M2_KV_CACHE,
-  int NUM_THREADS = 128>
+  int NUM_THREADS = 1024>
 void paged_attention_v1_launcher(
   torch::Tensor& out,
   torch::Tensor& query,
@@ -787,8 +787,8 @@ template<
   typename CACHE_T,
   int BLOCK_SIZE,
   bool IS_FP8_E5M2_KV_CACHE,
-  int NUM_THREADS = 128,
-  int PARTITION_SIZE = 512>
+  int NUM_THREADS = 1024,
+  int PARTITION_SIZE = 1024>
 void paged_attention_v2_launcher(
   torch::Tensor& out,
   torch::Tensor& exp_sums,

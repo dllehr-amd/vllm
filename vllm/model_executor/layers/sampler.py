@@ -13,6 +13,7 @@ from vllm.sequence import (Logprob, PromptLogprobs, SampleLogprobs,
                            SequenceOutput)
 from vllm.utils import is_neuron
 
+from vllm.model_executor.layers.tuned_gemm import tgemm
 
 class Sampler(nn.Module):
     """Samples the next tokens from the model's outputs.
@@ -42,7 +43,8 @@ class Sampler(nn.Module):
     def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.Tensor,
                     embedding_bias: Optional[torch.Tensor]) -> torch.Tensor:
         # Get the logits for the next tokens.
-        logits = torch.matmul(hidden_states, embedding.t())
+        #logits = torch.matmul(hidden_states, embedding.t())
+        logits = tgemm.mm(hidden_states, embedding)
         if embedding_bias is not None:
             logits += embedding_bias
         logits = tensor_model_parallel_gather(logits)

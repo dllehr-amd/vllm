@@ -15,7 +15,6 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.logger import init_logger
 from vllm.model_executor.layers.tuned_gemm import tgemm
 
-
 logger = init_logger(__name__)
 
 
@@ -132,7 +131,6 @@ class ReplicatedLinear(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias if not self.skip_bias_add else None
         output = self.linear_method.apply_weights(self.linear_weights, x, bias)
-        #print(f">>> output is {output}")
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
 
@@ -576,7 +574,6 @@ class RowParallelLinear(torch.nn.Module):
             output_ = tensor_model_parallel_all_reduce(output_parallel)
         else:
             output_ = output_parallel
-        #print(f">>> ROWPARALLEL {output_.shape}")
         if not self.skip_bias_add:
             output = output_ + self.bias if self.bias is not None else output_
             output_bias = None

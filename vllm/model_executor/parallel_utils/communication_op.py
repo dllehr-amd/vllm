@@ -78,7 +78,6 @@ def tensor_model_parallel_gather(input_: torch.Tensor,
     all the ranks.
     """
     world_size = get_tensor_model_parallel_world_size()
-
     # Bypass the function if we are using only 1 GPU.
     if world_size == 1:
         return input_

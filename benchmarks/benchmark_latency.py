@@ -105,7 +105,7 @@ def main(args: argparse.Namespace):
                     return
                 if args.rpd:
                     from rpdTracerControl import rpdTracerControl
-                    rpdTracerControl.setFilename(name = "/workspace/trace.rpd", append=True)
+                    rpdTracerControl.setFilename(name = "/app/trace.rpd", append=True)
                     profile_rpd = rpdTracerControl()
                     profile_rpd.start()
                     print(f"RPD Profiling'...")

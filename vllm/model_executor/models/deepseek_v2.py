@@ -27,6 +27,7 @@
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
+from typing import Union
 
 import torch
 from torch import nn
@@ -1102,7 +1103,7 @@ class DeepseekV2MLAAttention(nn.Module):
     def forward(
         self,
         positions: torch.Tensor,
-        hidden_states: torch.Tensor,
+        hidden_states: Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]],
         llama_4_scaling: torch.Tensor | None,
     ) -> torch.Tensor:
         return self.mla_attn(positions, hidden_states, llama_4_scaling)

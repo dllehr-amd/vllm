@@ -100,6 +100,32 @@ if current_platform.is_cuda_alike():
 elif current_platform.is_xpu():
     from vllm._ipex_ops import ipex_ops as ops
 
+# ROCm AITER quantization support
+fused_rms_fp8_group_quant = None
+fused_rms_mxfp4_quant = None
+rocm_aiter_fp8_dtype = None
+rocm_aiter_fp4_dtype = None
+
+try:
+    if current_platform.is_rocm() and rocm_aiter_ops.is_enabled():
+        from aiter.ops.triton.fused_fp8_quant import fused_rms_fp8_group_quant
+        from aiter.ops.triton.fused_mxfp4_quant import fused_rms_mxfp4_quant
+        import aiter as rocm_aiter
+        
+        rocm_aiter_fp8_dtype = rocm_aiter.dtypes.fp8
+        rocm_aiter_fp8_quant_group_size = 128
+        rocm_aiter_fp4_dtype = torch.uint8
+        rocm_aiter_fp4_quant_group_size = 32
+except (ImportError, AttributeError) as e:
+    # AITER not available or incompatible version
+    logger = init_logger(__name__)
+    if current_platform.is_rocm() and rocm_aiter_ops.is_enabled():
+        logger.warning(
+            "Failed to import AITER fused quantization kernels: %s. "
+            "Fused RMS normalization with quantization will not be available.",
+            str(e)
+        )
+
 logger = init_logger(__name__)
 
 
@@ -225,9 +251,15 @@ class DeepseekV2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        x_quant_scales = None
+        if isinstance(x, tuple):
+            x, x_quant_scales = x
+        gate_up, _ = self.gate_up_proj(x, x_quant_scales=x_quant_scales)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
+        x_quant_scales = None
+        if isinstance(x, tuple):
+            x, x_quant_scales = x
+        x, _ = self.down_proj(x, x_quant_scales=x_quant_scales)
         return x
 
 
@@ -336,6 +368,10 @@ class DeepseekV2MoE(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if isinstance(hidden_states, tuple):
+            hidden_states_shared, hidden_states = hidden_states
+        else:
+            hidden_states_shared = hidden_states
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
@@ -1193,6 +1229,34 @@ class DeepseekV2DecoderLayer(nn.Module):
         )
         self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
 
+        self.is_aiter_quark_mxfp4 = (
+            quant_config is not None
+            and type(quant_config).__name__ == "QuarkConfig"
+            and getattr(quant_config, "is_global_mxfp4", False)
+            and rocm_aiter_ops.is_enabled()
+        )
+        
+        # Validate that required kernels are available
+        if self.is_aiter_quark_mxfp4 and fused_rms_mxfp4_quant is None:
+            raise RuntimeError(
+                "MXFP4 quantization is enabled but fused_rms_mxfp4_quant kernel is not available. "
+                "Please ensure AITER is properly installed with MXFP4 support."
+            )
+        
+        # Check for FP8 path
+        self.use_aiter_fp8_quant = (
+            rocm_aiter_ops.is_enabled() 
+            and not self.is_aiter_quark_mxfp4 
+            and fused_rms_fp8_group_quant is not None
+        )
+        
+        if rocm_aiter_ops.is_enabled() and not self.is_aiter_quark_mxfp4:
+            if fused_rms_fp8_group_quant is None:
+                logger.warning(
+                    "ROCm AITER is enabled but fused_rms_fp8_group_quant is not available. "
+                    "Falling back to standard RMS normalization without fused quantization."
+                )
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -1201,11 +1265,48 @@ class DeepseekV2DecoderLayer(nn.Module):
         llama_4_scaling: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # Self Attention
-        if residual is None:
-            residual = hidden_states.clone()
-            hidden_states = self.input_layernorm(hidden_states)
+        if self.is_aiter_quark_mxfp4:
+            weight = self.input_layernorm.weight
+            eps = self.input_layernorm.variance_epsilon
+            if residual is None:
+                residual = hidden_states
+                (hidden_states_quant, hidden_states_quant_scales), _, _, _ = fused_rms_mxfp4_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            res1=None,
+                                                            shuffle=False,
+                                                            scale_shuffle_padding=False,
+                                                            output_unquantized_inp1=False)
+            else:
+                (hidden_states_quant, hidden_states_quant_scales), _, _, residual = fused_rms_mxfp4_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            res1=residual,
+                                                            shuffle=False,
+                                                            scale_shuffle_padding=False,
+                                                            output_unquantized_inp1=False)
+            hidden_states = (hidden_states_quant, hidden_states_quant_scales)
+        elif self.use_aiter_fp8_quant:
+            weight = self.input_layernorm.weight
+            eps = self.input_layernorm.variance_epsilon
+            if residual is None:
+                residual = hidden_states
+                (hidden_states_quant, hidden_states_quant_scales), _, _, _ = fused_rms_fp8_group_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            group_size=rocm_aiter_fp8_quant_group_size,
+                                                            dtype_quant=rocm_aiter_fp8_dtype, 
+                                                            res1=None)
+            else:
+                (hidden_states_quant, hidden_states_quant_scales), _, _, residual = fused_rms_fp8_group_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            group_size=rocm_aiter_fp8_quant_group_size,
+                                                            dtype_quant=rocm_aiter_fp8_dtype, 
+                                                            res1=residual)
+            hidden_states = (hidden_states_quant, hidden_states_quant_scales)
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            if residual is None:
+                residual = hidden_states.clone()
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
         attn_kwargs = {
             "positions": positions,
@@ -1229,7 +1330,40 @@ class DeepseekV2DecoderLayer(nn.Module):
                 residual *= 1.0 / self.routed_scaling_factor
 
         # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        if self.is_aiter_quark_mxfp4:
+            weight = self.post_attention_layernorm.weight
+            eps = self.post_attention_layernorm.variance_epsilon
+            if isinstance(self.mlp, DeepseekV2MoE):
+                (hidden_states_quant, hidden_states_quant_scales), hidden_states_unquant, _, residual = fused_rms_mxfp4_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            res1=residual,
+                                                            shuffle=False,
+                                                            scale_shuffle_padding=False,
+                                                            output_unquantized_inp1=True)
+                hidden_states = ((hidden_states_quant, hidden_states_quant_scales), hidden_states_unquant)
+            else:
+                (hidden_states_quant, hidden_states_quant_scales), _, _, residual = fused_rms_mxfp4_quant(hidden_states, weight, eps, 
+                                                            None, None, eps, 
+                                                            res1=residual,
+                                                            shuffle=False,
+                                                            scale_shuffle_padding=False,
+                                                            output_unquantized_inp1=False)
+                hidden_states = (hidden_states_quant, hidden_states_quant_scales)
+        elif self.use_aiter_fp8_quant:
+            weight = self.post_attention_layernorm.weight
+            eps = self.post_attention_layernorm.variance_epsilon
+            (hidden_states_quant, hidden_states_quant_scales), hidden_states_unquant, _, residual = fused_rms_fp8_group_quant(hidden_states, weight, eps, 
+                                                        None, None, eps, 
+                                                        group_size=rocm_aiter_fp8_quant_group_size,
+                                                        dtype_quant=rocm_aiter_fp8_dtype, 
+                                                        res1=residual,
+                                                        output_unquantized_inp1=isinstance(self.mlp, DeepseekV2MoE))
+            if isinstance(self.mlp, DeepseekV2MoE):
+                hidden_states = ((hidden_states_quant, hidden_states_quant_scales), hidden_states_unquant)
+            else:
+                hidden_states = (hidden_states_quant, hidden_states_quant_scales)
+        else:
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
 
         if isinstance(self.mlp, DeepseekV2MLP) and hidden_states.dtype == torch.float16:
@@ -1400,7 +1534,6 @@ class DeepseekV2ForCausalLM(
         from vllm.model_executor.layers.quantization.quark.quark import QuarkConfig
 
         if isinstance(quant_config, QuarkConfig):
-            print(f"quant_config: {quant_config.__class__.__name__}")
             quant_config.dynamic_mxfp4_quant = True
         qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
         qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)

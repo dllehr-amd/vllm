@@ -39,7 +39,6 @@ from vllm.platforms import current_platform
 logger = init_logger(__name__)
 
 X_QUANT_SCALES_SUPPORTED = [
-    "Fp8LinearMethod",
     "QuarkLinearMethod",
 ]
 

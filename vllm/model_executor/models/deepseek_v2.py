@@ -1242,14 +1242,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                 "MXFP4 quantization is enabled but fused_rms_mxfp4_quant kernel is not available. "
                 "Please ensure AITER is properly installed with MXFP4 support."
             )
-        
-        # Check for FP8 path
-        self.use_aiter_fp8_quant = (
-            rocm_aiter_ops.is_enabled() 
-            and not self.is_aiter_quark_mxfp4 
-            and fused_rms_fp8_group_quant is not None
-        )
-        
+
+
         if rocm_aiter_ops.is_enabled() and not self.is_aiter_quark_mxfp4:
             if fused_rms_fp8_group_quant is None:
                 logger.warning(
@@ -1283,23 +1277,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                                                             shuffle=False,
                                                             scale_shuffle_padding=False,
                                                             output_unquantized_inp1=False)
-            hidden_states = (hidden_states_quant, hidden_states_quant_scales)
-        elif self.use_aiter_fp8_quant:
-            weight = self.input_layernorm.weight
-            eps = self.input_layernorm.variance_epsilon
-            if residual is None:
-                residual = hidden_states
-                (hidden_states_quant, hidden_states_quant_scales), _, _, _ = fused_rms_fp8_group_quant(hidden_states, weight, eps, 
-                                                            None, None, eps, 
-                                                            group_size=rocm_aiter_fp8_quant_group_size,
-                                                            dtype_quant=rocm_aiter_fp8_dtype, 
-                                                            res1=None)
-            else:
-                (hidden_states_quant, hidden_states_quant_scales), _, _, residual = fused_rms_fp8_group_quant(hidden_states, weight, eps, 
-                                                            None, None, eps, 
-                                                            group_size=rocm_aiter_fp8_quant_group_size,
-                                                            dtype_quant=rocm_aiter_fp8_dtype, 
-                                                            res1=residual)
             hidden_states = (hidden_states_quant, hidden_states_quant_scales)
         else:
             if residual is None:

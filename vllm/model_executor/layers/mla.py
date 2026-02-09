@@ -197,9 +197,9 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
         hidden_states_scales = None
         if isinstance(hidden_states, tuple):
             hidden_states, hidden_states_scales = hidden_states
-        self.use_triton_fused_rmsnorm_fp4_quant = True
-        if self.use_triton_fused_rmsnorm_fp4_quant:
-            print(f'fused_qkv_a_proj print all attributes {dir(self.fused_qkv_a_proj)}')
+
+        # If aiter is enabled and MXFP4 quantization is enabled, use the aiter implementation
+        if hidden_states.dtype == torch.uint8 and rocm_aiter_ops.is_enabled():
             q_c, q_c_scale, kv_c_normed, k_pe = torch.ops.vllm.rocm_aiter_triton_qkv_a_proj_layernorm(
                                                     hidden_states_quant=hidden_states,
                                                     hidden_states_quant_scale=hidden_states_scales,
@@ -223,6 +223,7 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
             assert self.q_b_proj is not None, (
                 "q_b_proj is required when q_lora_rank is not None"
             )
+
             qkv_lora = self.fused_qkv_a_proj(hidden_states, x_quant_scales=hidden_states_scales)[0]
             #qkv_lora = self.fused_qkv_a_proj(hidden_states)[0]
             q_c, kv_lora = qkv_lora.split(
